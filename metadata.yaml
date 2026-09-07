@@ -1,0 +1,11 @@
+---
+title: "Book Title"
+author: "Author Name"
+lang: en-US
+
+documentclass: book
+
+toc: true
+toc-depth: 2
+
+numbersections: true
