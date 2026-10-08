@@ -1,0 +1,80 @@
+# Builds everything and publishes it to a Forgejo Release when a version tag (vX.Y.Z) is
+# pushed. Ordinary merges to main still just build artifacts via whatever other build
+# workflows this project adds; this one is for cutting an actual downloadable release with
+# the PDFs/EPUBs zipped up as release assets. Requires a repo secret RELEASE_TOKEN (a
+# Forgejo access token with write:repository scope) -- see AGENTS.md's Branches and CI
+# section, and this project's own Settings -> Actions -> Secrets.
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  release:
+    # "docker" is the default label of a Forgejo runner. If your runner uses a
+    # different label, change it here.
+    runs-on: docker
+    container:
+      image: git.silvarion.org/book-writing/ci-tools:latest
+    steps:
+      - name: Check out the repository
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Build everything
+        run: |
+          bash build.sh all
+
+      - name: Package release assets
+        shell: bash
+        run: |
+          shopt -s nullglob
+          mkdir -p release-assets
+
+          # make_zip <zip-name> <file-or-glob...> -- zips whichever of the given files/globs
+          # actually exist; skips (rather than fails) a zip with nothing to put in it, the
+          # same "skip missing content" philosophy build.sh itself uses.
+          make_zip() {
+            local zipname="$1"; shift
+            local existing=()
+            for f in "$@"; do
+              [ -e "$f" ] && existing+=("$f")
+            done
+            if [ ${#existing[@]} -eq 0 ]; then
+              echo "  (skip) ${zipname}: no files"
+              return
+            fi
+            zip -j "release-assets/${zipname}" "${existing[@]}"
+          }
+
+          # Must match build.sh's own BOOK variable -- update both together if you rename it.
+          BOOK="book"
+
+          make_zip "book.zip" \
+            "output/${BOOK}.pdf" "output/${BOOK}.epub" \
+            "output/${BOOK}_es.pdf" "output/${BOOK}_es.epub"
+
+          # Broad globs rather than naming specific systems (pf2, dnd5e-srd, ...) -- a
+          # forked project's system folders can be named anything (see AGENTS.md's "System
+          # (optional)" section), so this just catches whatever languages/systems the
+          # project actually has content for, in one zip, without needing to know their
+          # names ahead of time.
+          make_zip "adventures.zip" \
+            output/adventures/*.pdf output/adventures/*.epub \
+            "output/${BOOK}_adventures"*.pdf "output/${BOOK}_adventures"*.epub
+
+      - name: Publish release ${{ github.ref_name }}
+        uses: https://code.forgejo.org/actions/forgejo-release@v2
+        with:
+          direction: upload
+          url: https://git.silvarion.org
+          # owner/repo, e.g. "book-writing/heir-of-doom" -- resolved automatically so this
+          # workflow needs no editing after forking the template into a new repo. Hardcode it
+          # instead if this context variable ever misbehaves on your instance.
+          repo: ${{ github.repository }}
+          release-dir: release-assets
+          tag: ${{ github.ref_name }}
+          release-notes: "Automated build for ${{ github.ref_name }}."
+          token: ${{ secrets.RELEASE_TOKEN }}
