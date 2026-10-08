@@ -65,6 +65,12 @@ This is a generic book-writing template based on Markdown files, compiled to PDF
 
 Any language, adventure, or system with no content yet is skipped (printed as `(skip)`), not treated as an error — a fresh project forked from this template builds cleanly with nothing but `chapters/01-chapter-one.md` and `metadata.yaml` in place.
 
+## CI (Forgejo Actions)
+
+`.forgejo/ci-image/Dockerfile` + `.forgejo/workflows/build-ci-image.yml` build and publish `git.silvarion.org/book-writing/ci-tools:latest` — a shared pandoc/XeLaTeX/zip toolchain image every project in this org's build and release workflows pull, instead of each `apt-get install`-ing the same ~1GB of TeX Live packages from scratch on every single run.
+
+**This repo (book-template) is the canonical, single owner of that Dockerfile and workflow.** A project forked from this template should bring in its own `build-book.yml`/`build-adventures-*.yml`/`release.yml`-style workflows (whatever it actually needs, pulling the shared image), but should **not** also carry a copy of `build-ci-image.yml` or the Dockerfile — every project doing that would redundantly rebuild and push the identical shared tag on its own merges. Update the toolchain once, here, and every project picks it up next time any of them builds. Requires a repo secret `REGISTRY_TOKEN` (Forgejo access token, `write:package` scope) to push; the `ci-tools` package needs to be set public in the registry (one-time) so other projects can pull it without credentials.
+
 ## Technical Notes
 
 - Chapters/sessions are concatenated in filename order by `pandoc`, so numeric prefixes control ordering.

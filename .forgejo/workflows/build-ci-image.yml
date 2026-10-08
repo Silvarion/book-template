@@ -1,0 +1,77 @@
+# Builds and publishes the shared pandoc/XeLaTeX image EVERY book-writing-org project's
+# build/release workflows pull, instead of each installing the same packages from scratch on
+# every run. Canonically owned HERE (book-template) -- see .forgejo/ci-image/Dockerfile's own
+# header for why a project forked from this template should not also carry its own copy of
+# either file. Triggered by changes to the Dockerfile itself, or run by hand from the Actions
+# tab after an intentional rebuild.
+#
+# This job runs `docker build`/`docker push` itself, which needs two things from the runner
+# side (not this file): `container.privileged: true` and a Docker socket reachable from job
+# containers, both set via this fleet's silvarion.repos.forgejo Ansible role. It talks to the
+# runner host's own Docker engine through that mounted socket (sibling containers, not true
+# nested Docker) -- the image below just needs the `docker` CLI on it, nothing more.
+#
+# Must have a `node` binary ON the image itself (confirmed the hard way: debian:bookworm-slim
+# failed with "exec: node: executable file not found in $PATH"), even though all this job does
+# is run plain shell + docker commands -- `uses: checkout@v4` is a JS action, and Forgejo
+# Actions execs `node` inside the job container to run it, not something mounted in from the
+# host. node:20-bookworm already satisfies this for every project's other workflows for that
+# same reason; reusing it here instead of hand-rolling a minimal image avoids re-discovering this.
+#
+# git.silvarion.org is Cloudflare-proxied, and Cloudflare caps request body size (~100MB on
+# this instance's plan) -- the TeX Live layer in this image is well over that, so `docker push`
+# got all the way through login and build, then failed every layer upload with "413 Payload Too
+# Large" from Cloudflare. NOT fixable from this file at all, in the end: `docker push` from a
+# job container is just an API call over the mounted socket -- the actual push happens in the
+# DAEMON, which runs on the runner HOST, using the host's own /etc/hosts and DNS, entirely
+# independent of anything set on the job container (container.options, --add-host, etc. all
+# confirmed live to have zero effect on this). Fixed two layers up instead, in
+# infrastructure/homelab's docker/core group_vars: forgejo_runner_host_extra_hosts (routes
+# git.silvarion.org to Caddy's internal IP for the daemon itself) plus
+# forgejo_runner_host_disable_ipv6 (an IPv4-only host entry isn't enough on its own -- the host
+# also has real IPv6 connectivity and kept preferring the public AAAA/Cloudflare route).
+#
+# This job's container deliberately has no container.options of its own (see
+# forgejo_runner_docker_options in that same group_vars file for why one isn't even useful here).
+#
+# Requires a repo secret REGISTRY_TOKEN: a Forgejo access token with write:package scope.
+name: Build CI image
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.forgejo/ci-image/Dockerfile'
+      - '.forgejo/workflows/build-ci-image.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    # "docker" is the default label of a Forgejo runner. If your runner uses a
+    # different label, change it here.
+    runs-on: docker
+    # Same image every project's other workflows use (see the note above for why it has to
+    # be this one, not a minimal image of our own), with the docker CLI added below. No
+    # options here on purpose -- see the note above about why that would backfire.
+    container:
+      image: node:20-bookworm
+    steps:
+      - name: Install the docker CLI
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends docker.io ca-certificates
+
+      - name: Check out the repository
+        uses: https://code.forgejo.org/actions/checkout@v4
+
+      - name: Log in to the registry
+        run: |
+          echo "${{ secrets.REGISTRY_TOKEN }}" | docker login git.silvarion.org \
+            --username "${{ github.actor }}" --password-stdin
+
+      - name: Build and push
+        run: |
+          docker build -t git.silvarion.org/book-writing/ci-tools:latest \
+            -f .forgejo/ci-image/Dockerfile .
+          docker push git.silvarion.org/book-writing/ci-tools:latest
